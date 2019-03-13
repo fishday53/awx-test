@@ -1,0 +1,6 @@
+---
+# tasks file for testrole
+  - name: Test Message
+    debug:
+      msg: "AWX and Ansible"
+

@@ -1,0 +1,2 @@
+- src: git@github.com:fishday53/awx-test.git
+  scm: git
