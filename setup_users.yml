@@ -92,9 +92,13 @@
       set_fact:
         node_users: "{{ node_users_data['stdout'] | from_json }}"
 
-    - name: debug
+    - name: debug node_users
       debug:
         msg: "{{ node_users }}"
+
+    - name: debug users
+      debug:
+        msg: "{{ users }}"
 
 #    - name: update users
 #      user:
