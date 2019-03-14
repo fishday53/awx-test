@@ -1,0 +1,138 @@
+---
+
+- hosts: all,!localhost
+  become: yes
+  tasks:
+    - name: get node users data in json
+      shell: |
+        PASSWD_FILE="/etc/passwd"
+        GROUP_FILE="/etc/group"
+        
+        IFS=$'\n'
+        
+        USERS_LIST=""
+        let errors_count=0
+        for user_line in $( cat "${PASSWD_FILE}" );
+        do
+          user_id=""
+          user_id="$( printf "%s" "${user_line}" | sed --quiet 's/$/:/;/\([^\:]*\:\)\{3,3\}/{s/\([^\:]*\:\)\{3,3\}.*/\1/;s/:$//;p}' )"
+          
+          if test "${?}" -ne 0 -o -z "${user_id}";
+          then
+            let errors_count+=1
+            continue
+          fi
+          
+          user_name=""
+          user_name="$( printf "%s" "${user_line}" | sed --quiet 's/$/:/;/\([^\:]*\:\)\{1,1\}/{s/\([^\:]*\:\)\{1,1\}.*/\1/;s/:$//;p}' )"
+          
+          if test "${?}" -ne 0 -o -z "${user_name}";
+          then
+            let errors_count+=1
+            continue
+          fi
+          
+          user_home=""
+          user_home="$( printf "%s" "${user_line}" | sed --quiet 's/$/:/;/\([^\:]*\:\)\{6,6\}/{s/\([^\:]*\:\)\{6,6\}.*/\1/;s/:$//;p}' )"
+          
+          if test "${?}" -ne 0 -o -z "${user_home}";
+          then
+            let errors_count+=1
+            continue
+          fi
+          
+          user_groups=""
+          prefetch_user_groups_line=""
+          prefetch_user_groups_line="$( grep --fixed-regexp "${user_name}" "${GROUP_FILE}" )"
+          
+          for group_line in ${prefetch_user_groups_line};
+          do
+            group_users_list=""
+            group_users_list="$( printf "%s" "${group_line}" | sed --quiet 's/$/:/;/\([^\:]*\:\)\{4,4\}/{s/\([^\:]*\:\)\{4,4\}.*/\1/;s/:$//;s/,/\n/g;p}' )"
+            
+            for group_user in ${group_users_list};
+            do
+              if test "${group_user}" == "${user_name}";
+              then
+                group=""
+                group="$( printf "%s" "${group_line}" | sed --quiet 's/$/:/;/\([^\:]*\:\)\{1,1\}/{s/\([^\:]*\:\)\{1,1\}.*/\1/;s/:$//;p}' )"
+                
+                if test -z "${user_groups}";
+                then
+                  user_groups="\"${group}\""
+                else
+                  user_groups="${user_groups}, \"${group}\""
+                fi
+              fi
+            done
+          done
+          
+          if test -z "${USERS_LIST}";
+          then
+            USERS_LIST="{ \"name\":\"${user_name}\", \"id\":\"${user_id}\", \"home\":\"${user_home}\", \"groups\":[ ${user_groups} ] }"
+          else
+            USERS_LIST="${USERS_LIST}, { \"name\":\"${user_name}\", \"id\":\"${user_id}\", \"home\":\"${user_home}\", \"groups\":[ ${user_groups} ] }"
+          fi
+        done
+        
+        if test "${errors_count}" -eq 0;
+        then
+          printf "%s" "{ \"users\":[ ${USERS_LIST} ] }"
+          exit 0
+        else
+          printf "%s" ""
+          exit 1
+        fi
+      args:
+        executable: /bin/bash
+      register: node_users_data
+      check_mode: no
+
+    - name: set node_users fact from node users data in json
+      set_fact:
+        node_users: "{{ node_users_data['stdout'] | from_json }}"
+
+    - name: make existing terminal logs directory
+      file:
+        state: directory
+        path: /var/log/term
+        owner: root
+        group: root
+        mode: 0777
+
+    - name: setup history saver to .bashrc for managed users
+      blockinfile:
+        path: "{{ node_users | json_query(\"users[?name=='\" + item + \"'].home\") | join('') }}/.bashrc"
+        state: present
+        create: yes
+        owner: "{{ item }}"
+        mode: 0644
+        marker: "# {mark} ANSIBLE MANAGED BLOCK - HISTORY SAVER"
+        block: |
+          if test -z "${UNDER_SCRIPT}";
+          then
+            LOGDIR="/var/log/term/$(id -un)_$(id -u)"
+            
+            if test ! -d "${LOGDIR}";
+            then
+              mkdir "${LOGDIR}"
+            fi
+            
+            find "${LOGDIR}" -mindepth 1 -type f -name "*.log" -exec gzip -q {} \;
+            
+            find "${LOGDIR}" -mindepth 1 -maxdepth 1 -type f -mtime 65 -delete
+            
+            LOGFILE="${LOGDIR}/$( date +%F_%T).$$.log"
+            touch "${LOGFILE}"
+            
+            find "${LOGDIR}" -mindepth 1 -type f -exec chmod 0600 {} \;
+            chmod 0700 "${LOGDIR}"
+            
+            export UNDER_SCRIPT="${LOGFILE}"
+            
+            script -f -q "${LOGFILE}"
+            
+            exit 0
+          fi
+      with_items: "{{ users | combine( {'root':''} ) }}"
+      when: item in ( node_users | json_query('users[*].name') )

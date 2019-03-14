@@ -1,0 +1,157 @@
+---
+
+- hosts: all,!localhost
+  become: yes
+  tasks:
+    - name: get node users data in json
+      shell: |
+        PASSWD_FILE="/etc/passwd"
+        GROUP_FILE="/etc/group"
+        
+        IFS=$'\n'
+        
+        USERS_LIST=""
+        let errors_count=0
+        for user_line in $( cat "${PASSWD_FILE}" );
+        do
+          user_id=""
+          user_id="$( printf "%s" "${user_line}" | sed --quiet 's/$/:/;/\([^\:]*\:\)\{3,3\}/{s/\([^\:]*\:\)\{3,3\}.*/\1/;s/:$//;p}' )"
+          
+          if test "${?}" -ne 0 -o -z "${user_id}";
+          then
+            let errors_count+=1
+            continue
+          fi
+          
+          user_name=""
+          user_name="$( printf "%s" "${user_line}" | sed --quiet 's/$/:/;/\([^\:]*\:\)\{1,1\}/{s/\([^\:]*\:\)\{1,1\}.*/\1/;s/:$//;p}' )"
+          
+          if test "${?}" -ne 0 -o -z "${user_name}";
+          then
+            let errors_count+=1
+            continue
+          fi
+          
+          user_home=""
+          user_home="$( printf "%s" "${user_line}" | sed --quiet 's/$/:/;/\([^\:]*\:\)\{6,6\}/{s/\([^\:]*\:\)\{6,6\}.*/\1/;s/:$//;p}' )"
+          
+          if test "${?}" -ne 0 -o -z "${user_home}";
+          then
+            let errors_count+=1
+            continue
+          fi
+          
+          user_groups=""
+          prefetch_user_groups_line=""
+          prefetch_user_groups_line="$( grep --fixed-regexp "${user_name}" "${GROUP_FILE}" )"
+          
+          for group_line in ${prefetch_user_groups_line};
+          do
+            group_users_list=""
+            group_users_list="$( printf "%s" "${group_line}" | sed --quiet 's/$/:/;/\([^\:]*\:\)\{4,4\}/{s/\([^\:]*\:\)\{4,4\}.*/\1/;s/:$//;s/,/\n/g;p}' )"
+            
+            for group_user in ${group_users_list};
+            do
+              if test "${group_user}" == "${user_name}";
+              then
+                group=""
+                group="$( printf "%s" "${group_line}" | sed --quiet 's/$/:/;/\([^\:]*\:\)\{1,1\}/{s/\([^\:]*\:\)\{1,1\}.*/\1/;s/:$//;p}' )"
+                
+                if test -z "${user_groups}";
+                then
+                  user_groups="\"${group}\""
+                else
+                  user_groups="${user_groups}, \"${group}\""
+                fi
+              fi
+            done
+          done
+          
+          if test -z "${USERS_LIST}";
+          then
+            USERS_LIST="{ \"name\":\"${user_name}\", \"id\":\"${user_id}\", \"home\":\"${user_home}\", \"groups\":[ ${user_groups} ] }"
+          else
+            USERS_LIST="${USERS_LIST}, { \"name\":\"${user_name}\", \"id\":\"${user_id}\", \"home\":\"${user_home}\", \"groups\":[ ${user_groups} ] }"
+          fi
+        done
+        
+        if test "${errors_count}" -eq 0;
+        then
+          printf "%s" "{ \"users\":[ ${USERS_LIST} ] }"
+          exit 0
+        else
+          printf "%s" ""
+          exit 1
+        fi
+      args:
+        executable: /bin/bash
+      register: node_users_data
+      check_mode: no
+
+    - name: set node_users fact from node users data in json
+      set_fact:
+        node_users: "{{ node_users_data['stdout'] | from_json }}"
+
+    - name: debug
+      debug:
+        msg: "{{ node_users }}"
+
+#    - name: update users
+#      user:
+#        state: present
+#        name: "{{ item }}"
+#        shell: /bin/bash
+#        create_home: yes
+#        remove: no
+#        password: "{{ ( users[item]['is_active'] == true and inventory_hostname in users[item]['machines'] ) | ternary( users[item]['password_hash'] | regex_replace('\n', ''), '!' ) }}"
+#        expires: "{{ ( users[item]['is_active'] == true and inventory_hostname in users[item]['machines'] ) | ternary( -1, 0 ) }}"
+#        groups: "{{ ( users[item]['has_sudo'] == true ) | ternary( 'sudo', '' ) }}"
+#      with_items: "{{ users }}"
+#      when: ( ( users[item]['is_active'] == true and inventory_hostname in users[item]['machines'] ) or ( item in ( node_users | json_query('users[*].name') ) ) ) and ( item != 'okdesk' )
+
+#    - name: update users authorized_keys
+#      authorized_key:
+#        state: "{{ ( users[item]['is_active'] == true and inventory_hostname in users[item]['machines'] ) | ternary( 'present', 'absent' ) }}"
+#        exclusive: yes
+#        key: "{{ users[item]['pub_keys'] | join('\n') }}"
+#        user: "{{ item }}"
+#      with_items: "{{ users }}"
+#      when: ( ( users[item]['is_active'] == true and inventory_hostname in users[item]['machines'] ) or ( item in ( node_users | json_query('users[*].name') ) ) ) and ( item != 'okdesk' )
+
+#    - name: end sessions of deactivated users
+#      shell: |
+#        TARGET_USER="{{ item }}"
+#        
+#        if test "${TARGET_USER}" == "root";
+#        then
+#          exit 1
+#        fi
+#        
+#        pkill --exact --euid "${TARGET_USER}"
+#        PKILL_EXIT_CODE="${?}"
+#        
+#        if test "${PKILL_EXIT_CODE}" -eq 0 -o "${PKILL_EXIT_CODE}" -eq 1;
+#        then
+#          exit 0
+#        else
+#          exit 1
+#        fi
+#      with_items: "{{ users }}"
+#      when: "( ( users[item]['is_active'] == false or inventory_hostname not in users[item]['machines'] ) or ( users[item]['has_sudo'] == false and 'sudo' in ( node_users | json_query(\"users[?name=='\" + item + \"'].groups[]\") ) ) ) and ( item in ( node_users | json_query('users[*].name') ) ) and ( item != 'okdesk' )"
+
+#    - name: collect authorized_keys for okdesk user
+#      set_fact:
+#        okdesk_authorized_keys: "{{ okdesk_authorized_keys | default('') + ( users[item]['is_active'] == true and inventory_hostname in users[item]['machines'] and users[item]['can_deploy'] == true ) | ternary( users[item]['pub_keys'] | join('\n'), '' ) + '\n' }}"
+#      with_items: "{{ users }}"
+#      when: ( item != 'okdesk' )
+
+#    - name: update authorized_keys for okdesk user
+#      authorized_key:
+#        state: present
+#        exclusive: yes
+#        key: "{{ okdesk_authorized_keys }}"
+#        user: okdesk
+#      when: okdesk_authorized_keys is defined
+
+#- import_playbook: setup_bash_history.yml
+#- import_playbook: setup_access_logs.yml
