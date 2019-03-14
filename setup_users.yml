@@ -1,7 +1,7 @@
 ---
 
-- hosts: all,!localhost
-  become: yes
+- hosts: all
+#  become: yes
   tasks:
     - name: get node users data in json
       shell: |
